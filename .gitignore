@@ -1,0 +1,6 @@
+.vscode
+build/
+sdkconfig
+sdkconfig.ci
+sdkconfig.old
+main/constans.h
