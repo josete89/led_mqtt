@@ -39,13 +39,14 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-static const char *TAG = "MQTT_EXAMPLE";
+static const char *TAG = "PERGOLA_ESP32";
 
 static int s_retry_num = 0;
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
 
 static bool mqtt_connected = false;
+static bool mqtt_started = false;
 
 void setupLedConfig(){
     ESP_LOGI(TAG, "Configured to blink GPIO");
@@ -72,13 +73,28 @@ static void log_error_if_nonzero(const char *message, int error_code)
     }
 }
 
-static int publishMessage(esp_mqtt_client_handle_t client, const char *topic, const char *message)
+static int publishKeepAliveMessage(esp_mqtt_client_handle_t client, const char *topic, const char *message)
 {
-    const int qos = 1;
+    const int qos = 0;
     const int retain = 0;
     int message_id = esp_mqtt_client_publish(client, topic, message, 0, qos, retain);
     ESP_LOGI(TAG, "sent publish successful, msg_id");
     return message_id;
+}
+
+//create a recurent task to publish a message in a mqtt topic
+static void publish_task(void *pvParameter)
+{
+    esp_mqtt_client_handle_t client = (esp_mqtt_client_handle_t) pvParameter;
+    while (1) {
+        if(mqtt_connected && mqtt_started){ 
+            ESP_LOGI(TAG, "Publishing message");
+            publishKeepAliveMessage(client, topicSetOnline, "true");
+        }else{
+            ESP_LOGI(TAG, "Not connected to MQTT");
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
 }
 
 
@@ -101,6 +117,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        mqtt_connected = true;
         //publishMessage(client, topicSetOnline, "true");
 
         msg_id = esp_mqtt_client_subscribe(client, topicSetOn, 2);
@@ -109,6 +126,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+        mqtt_connected = false;
         break;
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
@@ -156,8 +174,12 @@ static void mqtt_app_start(void)
     /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_err_t error = esp_mqtt_client_start(client);
+
+    TaskHandle_t xHandle = NULL;
     if (error == ESP_OK){
-        mqtt_connected = true;
+        mqtt_started = true;
+        xTaskCreate(publish_task, "publish_task", 2048, client, tskIDLE_PRIORITY, &xHandle);
+        configASSERT( xHandle );
     }
 }
 
@@ -181,7 +203,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        if(!mqtt_connected){
+        if(!mqtt_started){
             mqtt_app_start();
         }
     }
@@ -277,4 +299,3 @@ void app_main(void)
     wifi_init_sta();
 }
 // Keep alive publishing
-// Test in req
